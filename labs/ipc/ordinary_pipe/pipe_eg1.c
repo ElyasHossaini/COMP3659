@@ -65,5 +65,5 @@ int main()
 	close(pipefd[WRITE_END]);
     }
 
-    exit(EXIT_SUCCESS);
+    exit(EXIT_SUCCESS)
 }
