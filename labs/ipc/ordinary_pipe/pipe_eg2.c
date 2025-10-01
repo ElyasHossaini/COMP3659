@@ -34,6 +34,9 @@ int main()
     if (pid2 == 0)
     {
 	/* TO DO */
+    close(pipefd[WRITE_END]);
+    dup2(pipefd[READ_END], 0);
+    execve("/usr/bin/wc", argv2, envp);
     }
 
     close(pipefd[READ_END]);
