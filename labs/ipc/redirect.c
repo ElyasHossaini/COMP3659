@@ -5,7 +5,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-/* #define ENABLE_REDIRECT */
+#define ENABLE_REDIRECT
 
 const char *msg1 = "A message to be written to the file via fd\n";
 const char *msg2 = "A message to be written to the file via alt_fd\n";

@@ -1,0 +1,3 @@
+A message to be written to the file via fd
+A message to be written to the file via alt_fd
+A message to be written to the standard output
