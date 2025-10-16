@@ -17,17 +17,28 @@
 #define MAX_JOBS   64
 
 /* --------------------- I/O helpers --------------------- */
-static void putstr(const char *s) { ssize_t r = write(STDOUT_FILENO, s, strlen(s)); (void)r; }
-static void puterr(const char *s) { ssize_t r = write(STDERR_FILENO, s, strlen(s)); (void)r; }
+static void putstr(const char *s) { 
+    ssize_t r = write(STDOUT_FILENO, s, strlen(s)); 
+    (void)r; 
+}
+static void puterr(const char *s) { 
+    ssize_t r = write(STDERR_FILENO, s, strlen(s)); 
+    (void)r; 
+}
 
 /* write unsigned int without stdio */
 static void write_uint(int fd, int v){
     char buf[16]; int i=0;
-    if (v==0){ (void)write(fd,"0",1); return; }
+    if (v==0){ 
+        ssize_t r = write(fd,"0",1); 
+        (void)r;
+        return; 
+    }
     char rev[16]; int r=0;
     while (v>0 && r<(int)sizeof(rev)) { rev[r++] = (char)('0' + (v%10)); v/=10; }
     while (r--) buf[i++] = rev[r];
-    (void)write(fd, buf, i);
+    ssize_t w = write(fd, buf, i);
+    (void)w;
 }
 
 /* --------------------- Job control --------------------- */
@@ -48,6 +59,7 @@ static struct termios shell_tmodes;
 /* --------------------- Prototypes --------------------- */
 static void install_shell(void);
 static void give_terminal_to(pid_t pgid);
+static void take_terminal_back(void);
 static void ignore_job_signals_in_shell(void);
 static void reap_done_jobs(void);
 
@@ -218,15 +230,16 @@ static void print_job(const job_t *j){
     if (!j || !j->used) return;
     const char *st = (j->state==JOB_RUNNING? "Running" :
                       j->state==JOB_STOPPED? "Stopped" : "Done");
-    (void)write(STDOUT_FILENO, "[", 1);
+    ssize_t r;
+    r = write(STDOUT_FILENO, "[", 1); (void)r;
     write_uint(STDOUT_FILENO, j->id);
-    (void)write(STDOUT_FILENO, "] ", 2);
+    r = write(STDOUT_FILENO, "] ", 2); (void)r;
     write_uint(STDOUT_FILENO, (int)j->pgid);
-    (void)write(STDOUT_FILENO, " ", 1);
-    (void)write(STDOUT_FILENO, st, strlen(st));
-    (void)write(STDOUT_FILENO, "    ", 4);
-    (void)write(STDOUT_FILENO, j->cmdline, strlen(j->cmdline));
-    (void)write(STDOUT_FILENO, "\n", 1);
+    r = write(STDOUT_FILENO, " ", 1); (void)r;
+    r = write(STDOUT_FILENO, st, strlen(st)); (void)r;
+    r = write(STDOUT_FILENO, "    ", 4); (void)r;
+    r = write(STDOUT_FILENO, j->cmdline, strlen(j->cmdline)); (void)r;
+    r = write(STDOUT_FILENO, "\n", 1); (void)r;
 }
 
 static void mark_job_state_from_child(pid_t pid, int status){
@@ -680,7 +693,8 @@ int main(void){
     for (int i=0; i<MAX_JOBS; i++){
         if (jobs[i].used){
             kill(-jobs[i].pgid, SIGTERM);
-            usleep(10000); /* Brief delay */
+            /* Use sleep instead of usleep */
+            sleep(1); /* 1 second delay instead of 10ms */
             kill(-jobs[i].pgid, SIGKILL); /* Force kill if still running */
         }
     }
