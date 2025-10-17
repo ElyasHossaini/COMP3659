@@ -181,7 +181,7 @@ static void ignore_job_signals_in_shell(void){
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = sigchld_handler;
-    sa.sa_flags   = SA_RESTART | SA_NOCLDSTOP;
+    sa.sa_flags   = SA_RESTART;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGCHLD, &sa, NULL);
 }
@@ -357,50 +357,53 @@ static int resume_job_fg(job_t *j){
 
 static int try_builtins(char **argv){
     if (!argv[0]) return 1;
-    if (strcmp(argv[0],"exit")==0) _exit(0);
-    if (strcmp(argv[0],"cd")==0)   { return builtin_cd(argv); }
-    if (strcmp(argv[0],"jobs")==0) { builtin_jobs(); return 1; }
-    if (strcmp(argv[0],"bg")==0) {
+
+    if (strcmp(argv[0],"exit")==0){
+        _exit(0); /* terminate the shell */
+    }
+
+    if (strcmp(argv[0],"cd")==0){
+        (void)builtin_cd(argv);  /* prints its own error if any */
+        return 1;                /* consume the command */
+    }
+
+    if (strcmp(argv[0],"jobs")==0){
+        builtin_jobs();
+        return 1;
+    }
+
+    if (strcmp(argv[0],"bg")==0){
         job_t *j=NULL;
         if (argv[1]) {
-            if (argv[1][0]=='%' && is_number(argv[1]+1)) {
-                j = find_job_by_id(atoi(argv[1]+1));
-            } else if (is_number(argv[1])) {
-                j = find_job_by_id(atoi(argv[1]));
-            }
+            if (argv[1][0]=='%' && is_number(argv[1]+1)) j = find_job_by_id(atoi(argv[1]+1));
+            else if (is_number(argv[1]))                 j = find_job_by_id(atoi(argv[1]));
         } else {
-            /* Find most recent stopped job */
+            /* most recent stopped */
             int max_id = 0;
-            for (int i=0;i<MAX_JOBS;i++) {
-                if (jobs[i].used && jobs[i].state==JOB_STOPPED && jobs[i].id > max_id) {
-                    j = &jobs[i];
-                    max_id = jobs[i].id;
-                }
-            }
+            for (int i=0;i<MAX_JOBS;i++)
+                if (jobs[i].used && jobs[i].state==JOB_STOPPED && jobs[i].id>max_id)
+                    j=&jobs[i], max_id=jobs[i].id;
         }
-        return resume_job_bg(j) == 0;
+        (void)resume_job_bg(j);  /* regardless of success, line is consumed */
+        return 1;
     }
-    if (strcmp(argv[0],"fg")==0) {
+
+    if (strcmp(argv[0],"fg")==0){
         job_t *j=NULL;
         if (argv[1]) {
-            if (argv[1][0]=='%' && is_number(argv[1]+1)) {
-                j = find_job_by_id(atoi(argv[1]+1));
-            } else if (is_number(argv[1])) {
-                j = find_job_by_id(atoi(argv[1]));
-            }
+            if (argv[1][0]=='%' && is_number(argv[1]+1)) j = find_job_by_id(atoi(argv[1]+1));
+            else if (is_number(argv[1]))                 j = find_job_by_id(atoi(argv[1]));
         } else {
-            /* Find most recent job */
+            /* most recent non-done */
             int max_id = 0;
-            for (int i=0;i<MAX_JOBS;i++) {
-                if (jobs[i].used && jobs[i].state != JOB_DONE && jobs[i].id > max_id) {
-                    j = &jobs[i];
-                    max_id = jobs[i].id;
-                }
-            }
+            for (int i=0;i<MAX_JOBS;i++)
+                if (jobs[i].used && jobs[i].state!=JOB_DONE && jobs[i].id>max_id)
+                    j=&jobs[i], max_id=jobs[i].id;
         }
-        return resume_job_fg(j) == 0;
+        (void)resume_job_fg(j);
+        return 1;
     }
-    return 0;
+    return 0; /* not a builtin */
 }
 
 /* --------------------- Redirection + exec --------------------- */
