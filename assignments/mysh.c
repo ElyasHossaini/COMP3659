@@ -70,7 +70,7 @@ static int  split_pipeline(char *line, char *stages[], int max);
 
 static void s_ncpy(char *dst, const char *src, size_t n);
 
-static void try_exec_with_path(char **argv);
+static int try_exec_with_path(char **argv);
 static void exec_simple(char **argv);
 static void apply_redirs(char **argv);
 
@@ -133,32 +133,44 @@ static void s_ncpy(char *dst, const char *src, size_t n){
 }
 
 /* --------------------- PATH search (no execvp) --------------------- */
-static void try_exec_with_path(char **argv){
+static int try_exec_with_path(char **argv){
+    if (!argv[0]) return -1;
+
+    /* absolute/relative path */
     if (strchr(argv[0], '/')) {
         execv(argv[0], argv);
-        _exit(127);
+        return -1;  /* if execv returns, it failed */
     }
-    char *path = getenv("PATH");
-    if (!path) _exit(127);
 
-    char buf[1024];  /* Increased buffer size */
-    char *p=path;
-    while (*p){
-        char *start=p;
-        while (*p && *p!=':') p++;
-        int len = (int)(p-start);
-        if (len>0 && len < (int)sizeof(buf)-2){  /* Extra space for slash and null */
-            int off=0;
-            for (int i=0;i<len && off<(int)sizeof(buf)-2;i++) buf[off++]=start[i];
-            if (off<(int)sizeof(buf)-2 && buf[off-1] != '/') buf[off++]='/';
-            const char *nm = argv[0];
-            while (*nm && off<(int)sizeof(buf)-1) buf[off++]=*nm++;
-            buf[off]='\0';
-            execv(buf, argv); /* try candidate */
+    /* search PATH (treat empty segments as ".") */
+    char *path = getenv("PATH");
+    if (!path) return -1;
+
+    char buf[1024];
+    char *p = path;
+    while (1) {
+        char *start = p, *end = p;
+        while (*end && *end != ':') end++;
+        int seglen = (int)(end - start);
+
+        int off = 0;
+        if (seglen == 0) {              /* empty segment => "." */
+            buf[off++]='.'; buf[off++]='/';
+        } else {
+            for (int i=0; i<seglen && off<(int)sizeof(buf)-2; i++) buf[off++] = start[i];
+            if (buf[off-1] != '/' && off<(int)sizeof(buf)-1) buf[off++] = '/';
         }
-        if (*p==':') p++;
+        const char *nm = argv[0];
+        while (*nm && off < (int)sizeof(buf)-1) buf[off++] = *nm++;
+        buf[off] = '\0';
+
+        execv(buf, argv);               /* try this candidate; only returns on failure */
+
+        if (!*end) break;               /* reached end of PATH */
+        p = end + 1;
     }
-    _exit(127);
+
+    return -1; /* not found anywhere */
 }
 
 /* --------------------- Signals --------------------- */
@@ -454,14 +466,24 @@ static void apply_redirs(char **argv){
 
 static void exec_simple(char **argv){
     apply_redirs(argv);
+
+    /* If redirection removed the command (e.g., line was just '> file'), fail cleanly. */
+    if (!argv[0]) { 
+        puterr("mysh: empty command\n");
+        _exit(127);
+    }
+
     signal(SIGINT,  SIG_DFL);
     signal(SIGTSTP, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
-    try_exec_with_path(argv);
-    puterr("mysh: command not found: ");
-    puterr(argv[0]);
-    puterr("\n");
-    _exit(127);
+
+    if (try_exec_with_path(argv) < 0) {
+        puterr("mysh: command not found: ");
+        puterr(argv[0]);
+        puterr("\n");
+        _exit(127);
+    }
+    /* never reached */
 }
 
 /* --------------------- Pipelines (n-stage) --------------------- */
