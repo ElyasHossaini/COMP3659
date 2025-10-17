@@ -651,10 +651,7 @@ int main(void){
 
             int br = try_builtins(argv);
             if (br == 1) continue;                  /* builtin handled */
-            if (br == 2) {                          /* exit requested */
-                putstr("Exiting mysh...\n");
-                break;
-            }
+            if (br == 2) break;                     /* exit requested */
 
             /* Fork for simple command */
             pid_t pid = fork();
