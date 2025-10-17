@@ -358,43 +358,41 @@ static int resume_job_fg(job_t *j){
 static int try_builtins(char **argv){
     if (!argv[0]) return 1;
 
-    if (strcmp(argv[0],"exit")==0){
-        _exit(0); /* terminate the shell */
+    if (strcmp(argv[0], "exit") == 0) {
+        return 2; /* tell main to exit */
     }
 
-    if (strcmp(argv[0],"cd")==0){
-        (void)builtin_cd(argv);  /* prints its own error if any */
-        return 1;                /* consume the command */
+    if (strcmp(argv[0], "cd") == 0) {
+        (void)builtin_cd(argv);
+        return 1;
     }
 
-    if (strcmp(argv[0],"jobs")==0){
+    if (strcmp(argv[0], "jobs") == 0) {
         builtin_jobs();
         return 1;
     }
 
-    if (strcmp(argv[0],"bg")==0){
-        job_t *j=NULL;
+    if (strcmp(argv[0], "bg") == 0) {
+        job_t *j = NULL;
         if (argv[1]) {
             if (argv[1][0]=='%' && is_number(argv[1]+1)) j = find_job_by_id(atoi(argv[1]+1));
             else if (is_number(argv[1]))                 j = find_job_by_id(atoi(argv[1]));
         } else {
-            /* most recent stopped */
             int max_id = 0;
             for (int i=0;i<MAX_JOBS;i++)
                 if (jobs[i].used && jobs[i].state==JOB_STOPPED && jobs[i].id>max_id)
                     j=&jobs[i], max_id=jobs[i].id;
         }
-        (void)resume_job_bg(j);  /* regardless of success, line is consumed */
+        (void)resume_job_bg(j);
         return 1;
     }
 
-    if (strcmp(argv[0],"fg")==0){
-        job_t *j=NULL;
+    if (strcmp(argv[0], "fg") == 0) {
+        job_t *j = NULL;
         if (argv[1]) {
             if (argv[1][0]=='%' && is_number(argv[1]+1)) j = find_job_by_id(atoi(argv[1]+1));
             else if (is_number(argv[1]))                 j = find_job_by_id(atoi(argv[1]));
         } else {
-            /* most recent non-done */
             int max_id = 0;
             for (int i=0;i<MAX_JOBS;i++)
                 if (jobs[i].used && jobs[i].state!=JOB_DONE && jobs[i].id>max_id)
@@ -403,6 +401,7 @@ static int try_builtins(char **argv){
         (void)resume_job_fg(j);
         return 1;
     }
+
     return 0; /* not a builtin */
 }
 
@@ -575,20 +574,25 @@ static pid_t launch_pipeline(char *stage_strs[], int nstages, char *cmdline, int
 
 /* --------------------- Read line (raw, system calls) --------------------- */
 static int read_line(char *buf, int maxlen){
-    int off=0;
-    while (off < maxlen-1){
-        char c; 
+    int off = 0;
+    while (off < maxlen - 1){
+        char c;
         ssize_t n = read(STDIN_FILENO, &c, 1);
-        if (n <= 0) {
-            if (n == 0) break; /* EOF */
-            if (errno == EINTR) continue;
-            break;
+        if (n == 0) {
+            /* EOF */
+            if (off == 0) return -1;  /* signal EOF to caller */
+            break;                    /* deliver what we have */
         }
-        if (c == '\n') break;
+        if (n < 0) {
+            if (errno == EINTR) continue; /* interrupted -> retry */
+            return -1;                    /* other error -> treat as EOF */
+        }
+        if (c == '\r') continue;   /* ignore CR on some terminals */
+        if (c == '\n') break;      /* end of line */
         buf[off++] = c;
     }
-    buf[off]='\0';
-    return off;
+    buf[off] = '\0';
+    return off;  /* 0 => empty line, >0 => has content */
 }
 
 /* --------------------- Shell initialization --------------------- */
@@ -615,9 +619,12 @@ int main(void){
         putstr("mysh$ ");
 
         int n = read_line(line, sizeof(line));
-        if (n <= 0){ 
-            putstr("\n"); 
-            break; 
+        if (n < 0) {          /* EOF (Ctrl-D at start) */
+            putstr("\n");
+            break;            /* exit the shell */
+        }
+        if (n == 0) {         /* user just pressed Enter */
+            continue;         /* show prompt again */
         }
 
         trim_trailing(line);
@@ -642,7 +649,12 @@ int main(void){
             parse_argv(stages[0], argv);
             if (!argv[0]) continue;
 
-            if (try_builtins(argv)) continue;
+            int br = try_builtins(argv);
+            if (br == 1) continue;                  /* builtin handled */
+            if (br == 2) {                          /* exit requested */
+                putstr("Exiting mysh...\n");
+                break;
+            }
 
             /* Fork for simple command */
             pid_t pid = fork();
