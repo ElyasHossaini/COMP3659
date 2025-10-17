@@ -649,12 +649,7 @@ int main(void){
             parse_argv(stages[0], argv);
             if (!argv[0]) continue;
 
-            int br = try_builtins(argv);
-            if (br == 1) continue;                  /* builtin handled */
-            if (br == 2) {                          /* exit requested */
-                putstr("Exiting mysh...\n");
-                break;
-            }
+            if (try_builtins(argv)) continue;
 
             /* Fork for simple command */
             pid_t pid = fork();
