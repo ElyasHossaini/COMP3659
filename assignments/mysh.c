@@ -16,18 +16,31 @@
 #define MAX_CMDS   8
 #define MAX_JOBS   64
 
-/* --------------------- I/O helpers --------------------- */
-static void putstr(const char *s){ ssize_t r = write(STDOUT_FILENO, s, strlen(s)); (void)r; }
-static void puterr(const char *s){ ssize_t r = write(STDERR_FILENO,  s, strlen(s)); (void)r; }
+/* --------------------- Robust write helpers --------------------- */
+/* returns 0 on success, -1 on error */
+static int write_all(int fd, const char *buf, size_t len){
+    size_t off = 0;
+    while (off < len){
+        ssize_t n = write(fd, buf + off, len - off);
+        if (n < 0){
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    return 0;
+}
+static void putstr(const char *s){ if (s) (void)write_all(STDOUT_FILENO, s, strlen(s)); }
+static void puterr(const char *s){ if (s) (void)write_all(STDERR_FILENO, s, strlen(s)); }
 
 /* write unsigned int without stdio */
-static void write_uint(int fd, int v){
+static void write_uint_fd(int fd, unsigned int v){
     char buf[16]; int i=0;
-    if (v==0){ (void)write(fd, "0", 1); return; }
-    char rev[16]; int r=0;
-    while (v>0 && r<(int)sizeof(rev)){ rev[r++] = (char)('0' + (v%10)); v/=10; }
-    while (r--) buf[i++] = rev[r];
-    (void)write(fd, buf, i);
+    if (v==0){ (void)write_all(fd, "0", 1); return; }
+    char tmp[16]; int r=0;
+    while (v>0 && r<(int)sizeof(tmp)){ tmp[r++] = (char)('0' + (v%10)); v/=10; }
+    while (r--) buf[i++] = tmp[r];
+    (void)write_all(fd, buf, (size_t)i);
 }
 
 /* --------------------- Job control --------------------- */
@@ -119,7 +132,7 @@ static int read_line(char *buf, int maxlen){
     int off=0;
     while (off < maxlen-1){
         char c; ssize_t n = read(STDIN_FILENO, &c, 1);
-        if (n==0){                     /* real EOF */
+        if (n==0){ /* real EOF */
             if (off==0) return -1;     /* signal EOF to caller */
             break;                     /* deliver partial line */
         }
@@ -139,7 +152,6 @@ static int read_line(char *buf, int maxlen){
 static int try_exec_with_path(char **argv){
     if (!argv[0]) return -1;
 
-    /* absolute/relative path */
     if (strchr(argv[0], '/')){
         execv(argv[0], argv);
         return -1; /* only returns on failure */
@@ -166,9 +178,9 @@ static int try_exec_with_path(char **argv){
         while (*nm && off<(int)sizeof(buf)-1) buf[off++]=*nm++;
         buf[off]='\0';
 
-        execv(buf, argv);               /* try; returns only on failure */
+        execv(buf, argv);               /* returns only on failure */
 
-        if (!*end) break;               /* end of PATH */
+        if (!*end) break;
         p = end + 1;
     }
     return -1;
@@ -201,6 +213,7 @@ static void apply_redirs(char **argv){
 static void exec_simple(char **argv){
     apply_redirs(argv);
     if (!argv[0]){ puterr("mysh: empty command\n"); _exit(127); }
+
     signal(SIGINT,  SIG_DFL);
     signal(SIGTSTP, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
@@ -209,14 +222,12 @@ static void exec_simple(char **argv){
         puterr("mysh: command not found: "); puterr(argv[0]); puterr("\n");
         _exit(127);
     }
-    /* not reached */
 }
 
 /* --------------------- Signals & reaping --------------------- */
 static void sigchld_handler(int sig){
     (void)sig;
     int status; pid_t pid;
-    /* Mark stop/continue; don't try to mark DONE here */
     while ((pid = waitpid(-1, &status, WNOHANG|WUNTRACED|WCONTINUED)) > 0){
         if (WIFSTOPPED(status)){
             pid_t pg = getpgid(pid);
@@ -225,7 +236,7 @@ static void sigchld_handler(int sig){
             pid_t pg = getpgid(pid);
             if (pg>0){ job_t *j = find_job_by_pgid(pg); if (j) j->state = JOB_RUNNING; }
         }
-        /* if exited/signaled: ignore here; sweep will remove */
+        /* Exited/signaled will be detected by sweep below */
     }
 }
 
@@ -239,17 +250,15 @@ static void ignore_job_signals_in_shell(void){
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = sigchld_handler;
-    sa.sa_flags   = SA_RESTART; /* no SA_NOCLDSTOP/WAIT */
+    sa.sa_flags   = SA_RESTART;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGCHLD, &sa, NULL);
 }
 
 static void reap_done_jobs(void){
-    /* reap any exited children */
     int status;
-    while (waitpid(-1, &status, WNOHANG) > 0) { /* noop: handler did state updates for stop/cont */ }
+    while (waitpid(-1, &status, WNOHANG) > 0) { /* noop */ }
 
-    /* remove jobs whose process group no longer exists */
     for (int i=0;i<MAX_JOBS;i++){
         if (!jobs[i].used) continue;
         if (kill(-jobs[i].pgid, 0) == -1 && errno == ESRCH){
@@ -301,18 +310,28 @@ static void remove_job(job_t *j){ if (!j) return; memset(j, 0, sizeof(*j)); }
 
 static void print_job(const job_t *j){
     if (!j || !j->used) return;
-    const char *st = (j->state==JOB_RUNNING? "Running" : j->state==JOB_STOPPED? "Stopped" : "Done");
-    (void)write(STDOUT_FILENO,"[",1); write_uint(STDOUT_FILENO,j->id);
-    (void)write(STDOUT_FILENO,"] ",2); write_uint(STDOUT_FILENO,(int)j->pgid);
-    (void)write(STDOUT_FILENO," ",1); (void)write(STDOUT_FILENO, st, strlen(st));
-    (void)write(STDOUT_FILENO,": ",2); (void)write(STDOUT_FILENO, j->cmdline, strlen(j->cmdline));
-    (void)write(STDOUT_FILENO,"\n",1);
+    const char *st = (j->state==JOB_RUNNING? "Running" :
+                      j->state==JOB_STOPPED? "Stopped" : "Done");
+    (void)write_all(STDOUT_FILENO,"[",1);
+    write_uint_fd(STDOUT_FILENO, (unsigned)j->id);
+    (void)write_all(STDOUT_FILENO,"] ",2);
+    write_uint_fd(STDOUT_FILENO, (unsigned)j->pgid);
+    (void)write_all(STDOUT_FILENO," ",1);
+    (void)write_all(STDOUT_FILENO, st, strlen(st));
+    (void)write_all(STDOUT_FILENO,": ",2);
+    (void)write_all(STDOUT_FILENO, j->cmdline, strlen(j->cmdline));
+    (void)write_all(STDOUT_FILENO,"\n",1);
 }
 
 /* --------------------- Builtins --------------------- */
 static int is_number(const char *s){
-    if (!s||!*s) return 0; for (const char *p=s; *p; ++p) if (*p<'0'||*p>'9') return 0; return 1;
+    if (!s || !*s) return 0;
+    for (const char *p = s; *p; ++p){
+        if (*p < '0' || *p > '9') return 0;
+    }
+    return 1;
 }
+
 static int builtin_cd(char **argv){
     const char *dir = argv[1] ? argv[1] : getenv("HOME");
     if (!dir){ puterr("cd: HOME not set\n"); return -1; }
@@ -463,7 +482,6 @@ int main(void){
         trim_trailing(line);
         if (line[0]=='\0') continue;
 
-        /* background? */
         int background = 0;
         int L = (int)strlen(line);
         if (L>0 && line[L-1]=='&'){
@@ -471,10 +489,8 @@ int main(void){
             if (line[0]=='\0') continue;
         }
 
-        /* save original for jobs display BEFORE split (split mutates) */
         char cmdline_copy[MAX_LINE]; s_ncpy(cmdline_copy, line, sizeof(cmdline_copy));
 
-        /* pipeline split */
         char *stages[MAX_CMDS];
         int nstages = split_pipeline(line, stages, MAX_CMDS);
 
@@ -514,7 +530,7 @@ int main(void){
         }
     }
 
-    /* try to terminate remaining bg jobs politely */
+    /* terminate remaining bg jobs politely */
     for (int i=0;i<MAX_JOBS;i++){
         if (jobs[i].used){
             (void)kill(-jobs[i].pgid, SIGTERM);
